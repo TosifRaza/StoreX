@@ -31,7 +31,13 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
-const register = async ({ name, email, phone, password, businessName, businessType }) => {
+// ─── register (FIXED — accepts all fields, saves them to Business) ──────
+const register = async ({
+  name, email, phone, password,
+  businessName, businessType,
+  address, city, state, pincode,
+  enableTax, taxRate, invoicePrefix,
+}) => {
   const existingUser = await User.findOne({ email });
   if (existingUser) throw new AuthError('Email already registered', 409);
 
@@ -39,9 +45,17 @@ const register = async ({ name, email, phone, password, businessName, businessTy
   session.startTransaction();
   try {
     const freePlan = await Plan.findOne({ name: 'Free' });
+
     const business = new Business({
       name: businessName,
       type: businessType || 'retail',
+      address: address || '',
+      city: city || '',
+      state: state || '',
+      pincode: pincode || '',
+      taxEnabled: enableTax ?? true,
+      taxRate: Number(taxRate) || 0,
+      invoicePrefix: invoicePrefix || 'INV',
       subscriptionStatus: 'trial',
       trialStartDate: new Date(),
       trialEndDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
@@ -56,6 +70,7 @@ const register = async ({ name, email, phone, password, businessName, businessTy
     business.createdBy = user._id;
     await business.save({ session });
 
+    // ── Role + Subscription block (restored — was missing) ───────
     const ownerRole = new Role({
       name: 'owner',
       description: 'Business owner with full access',
@@ -98,14 +113,14 @@ const register = async ({ name, email, phone, password, businessName, businessTy
       });
       await subscription.save({ session });
     }
+    // ── end Role + Subscription block ─────────────────────────────
 
     await session.commitTransaction();
     session.endSession();
 
-    user.businessId = business._id;
     const tokens = generateTokens(user);
     const permissions = await getUserPermissions(user);
-    return { user: user.toJSON(), business, tokens, permissions };
+    return { user: user.toJSON(), business: business.toJSON(), tokens, permissions };
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
@@ -113,6 +128,7 @@ const register = async ({ name, email, phone, password, businessName, businessTy
   }
 };
 
+// ─── login (restored) ────────────────────────────────────────────────────
 const login = async ({ email, password, ipAddress, userAgent }) => {
   const user = await User.findOne({ email }).select('+password');
   if (!user) throw new AuthError('Invalid email or password', 401);
@@ -137,9 +153,12 @@ const login = async ({ email, password, ipAddress, userAgent }) => {
 
   const tokens = generateTokens(user);
   const permissions = await getUserPermissions(user);
-  return { user: user.toJSON(), tokens, permissions };
+  // Also return the business so the frontend can store it alongside the user
+  const business = await Business.findById(user.businessId);
+  return { user: user.toJSON(), business: business ? business.toJSON() : null, tokens, permissions };
 };
 
+// ─── refreshToken (restored) ─────────────────────────────────────────────
 const refreshToken = async (userId) => {
   const user = await User.findById(userId);
   if (!user) throw new AuthError('Invalid refresh token', 401);
@@ -147,6 +166,7 @@ const refreshToken = async (userId) => {
   return generateTokens(user);
 };
 
+// ─── forgotPassword (restored) ───────────────────────────────────────────
 const forgotPassword = async (email) => {
   const user = await User.findOne({ email });
   if (!user) throw new AuthError('No account found with this email', 404);
@@ -159,6 +179,7 @@ const forgotPassword = async (email) => {
   return { message: 'Password reset link sent to your email', token: resetToken };
 };
 
+// ─── resetPassword (restored) ────────────────────────────────────────────
 const resetPassword = async (token, newPassword) => {
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const user = await User.findOne({
@@ -173,6 +194,7 @@ const resetPassword = async (token, newPassword) => {
   return { message: 'Password reset successfully' };
 };
 
+// ─── changePassword (restored) ───────────────────────────────────────────
 const changePassword = async (userId, currentPassword, newPassword) => {
   const user = await User.findById(userId).select('+password');
   if (!user) throw new AuthError('User not found', 404);
@@ -183,24 +205,58 @@ const changePassword = async (userId, currentPassword, newPassword) => {
   return { message: 'Password changed successfully' };
 };
 
+// ─── getProfile (FIXED — now populates businessId) ──────────────────────
 const getProfile = async (userId) => {
-  const user = await User.findById(userId);
+  const user = await User.findById(userId).populate('businessId');
   if (!user) throw new AuthError('User not found', 404);
   const permissions = await getUserPermissions(user);
   return { ...user.toJSON(), permissions };
 };
 
+// ─── updateProfile (FIXED — updates both User and Business) ──────────────
 const updateProfile = async (userId, updateData) => {
-  const allowedFields = ['name', 'phone'];
-  const filtered = {};
-  for (const key of allowedFields) {
-    if (updateData[key] !== undefined) filtered[key] = updateData[key];
+  const userFields = ['name', 'phone'];
+  const businessFieldMap = {
+    businessName: 'name',
+    businessType: 'type',
+    address: 'address',
+    city: 'city',
+    state: 'state',
+    pincode: 'pincode',
+    enableTax: 'taxEnabled',
+    taxRate: 'taxRate',
+    invoicePrefix: 'invoicePrefix',
+  };
+
+  const userUpdate = {};
+  const businessUpdate = {};
+  for (const key of Object.keys(updateData)) {
+    if (userFields.includes(key)) {
+      userUpdate[key] = updateData[key];
+    } else if (key in businessFieldMap) {
+      const mapped = businessFieldMap[key];
+      businessUpdate[mapped] = key === 'taxRate' ? Number(updateData[key]) : updateData[key];
+    }
   }
-  const user = await User.findByIdAndUpdate(userId, filtered, { new: true, runValidators: true });
+
+  const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true, runValidators: true });
   if (!user) throw new AuthError('User not found', 404);
-  return user.toJSON();
+
+  if (Object.keys(businessUpdate).length > 0 && user.businessId) {
+    await Business.findByIdAndUpdate(user.businessId, businessUpdate, { new: true, runValidators: true });
+  }
+
+  const populated = await User.findById(userId).populate('businessId');
+  return populated.toJSON();
 };
 
 module.exports = {
-  register, login, refreshToken, forgotPassword, resetPassword, changePassword, getProfile, updateProfile,
+  register,
+  login,
+  refreshToken,
+  forgotPassword,
+  resetPassword,
+  changePassword,
+  getProfile,
+  updateProfile,
 };
