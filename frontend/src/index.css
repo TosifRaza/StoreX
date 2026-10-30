@@ -2,6 +2,19 @@
 
 @layer base {
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #101828;
+    background-color: #ffffff;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
+}
+
+/* Custom smooth styles */
+.gradient-hero-bg {
+  background: radial-gradient(110% 80% at 50% 0%, #F5F8FF 0%, #FFFFFF 70%);
+}
+
+.gradient-card-border {
+  border-color: rgba(226, 232, 240, 0.8);
 }
