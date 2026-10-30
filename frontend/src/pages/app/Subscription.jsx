@@ -6,8 +6,9 @@ import {
   HiOutlineUserGroup,
   HiOutlineBuildingOffice,
   HiOutlineArrowUpRight,
+  HiOutlineArrowPath,
   HiOutlineCreditCard,
-  HiOutlineXMark,
+  HiOutlineExclamationTriangle,
 } from 'react-icons/hi2';
 
 import PageHeader from '../../components/PageHeader';
@@ -16,9 +17,11 @@ import Button from '../../components/Button';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import Modal from '../../components/Modal';
 import { subscriptionApi } from '../../api/subscriptionApi';
+import { useBusiness } from '../../context/BusinessContext';
 import { formatCurrency } from '../../utils/helpers';
 
 function Subscription() {
+  const { refreshBusiness } = useBusiness();
   const [currentPlan, setCurrentPlan] = useState(null);
   const [plans, setPlans] = useState([]);
   const [usage, setUsage] = useState(null);
@@ -40,7 +43,8 @@ function Subscription() {
         setCurrentPlan(planRes.value?.data?.data ?? planRes.value?.data ?? null);
       }
       if (plansRes.status === 'fulfilled') {
-        setPlans(plansRes.value?.data?.data ?? plansRes.value?.data ?? plansRes.value?.data?.plans ?? []);
+        const rawPlans = plansRes.value?.data?.data ?? plansRes.value?.data ?? plansRes.value?.data?.plans ?? [];
+        setPlans(Array.isArray(rawPlans) ? rawPlans : []);
       }
       if (usageRes.status === 'fulfilled') {
         setUsage(usageRes.value?.data?.data ?? usageRes.value?.data ?? null);
@@ -56,21 +60,36 @@ function Subscription() {
     fetchData();
   }, [fetchData]);
 
+  // Resolve plan and expiration details from currentPlan
+  const planObj = currentPlan?.planId && typeof currentPlan.planId === 'object' ? currentPlan.planId : null;
+  const currentPlanId = planObj?._id || currentPlan?.planId || currentPlan?.id;
+  const currentPlanName = (planObj?.name || currentPlan?.name || 'Free').trim();
+  const currentPlanPrice = planObj?.price ?? currentPlan?.price ?? 0;
+  const currentPlanInterval = planObj?.interval || currentPlan?.interval || 'month';
+  const currentPlanEndDate = currentPlan?.endDate || currentPlan?.renewalDate;
+
+  const isExpired =
+    currentPlan?.status === 'expired' ||
+    (currentPlanEndDate && new Date(currentPlanEndDate) < new Date());
+
   const handleUpgrade = async (planId) => {
-    const plan = plans.find(p => p.id === planId);
+    const plan = plans.find((p) => String(p._id || p.id) === String(planId));
     if (!plan) return;
 
     if (plan.price > 0) {
       // Show payment dialog for paid plans
       try {
         setUpgrading(true);
-        const { data } = await subscriptionApi.createPaymentIntent({ planId });
+        const { data } = await subscriptionApi.createPaymentIntent({
+          planId: plan._id || plan.id,
+          subscriptionId: currentPlan?._id,
+        });
         const intent = data?.data ?? data;
         setPaymentDialog({
           open: true,
           plan,
           orderId: intent.orderId,
-          amount: intent.amount,
+          amount: intent.amount || plan.price,
         });
       } catch (err) {
         toast.error(err?.response?.data?.message || 'Failed to initiate payment');
@@ -78,14 +97,19 @@ function Subscription() {
         setUpgrading(false);
       }
     } else {
-      // Free plan - subscribe directly
+      // Free plan - subscribe / reactivate directly
       setUpgrading(true);
       try {
-        await subscriptionApi.subscribe({ planId });
-        toast.success('Subscription upgraded successfully');
+        await subscriptionApi.subscribe({ planId: plan._id || plan.id });
+        toast.success(
+          isExpired
+            ? 'Free plan reactivated successfully'
+            : 'Subscription plan updated successfully'
+        );
         fetchData();
+        refreshBusiness?.();
       } catch (err) {
-        toast.error(err?.response?.data?.message || 'Failed to upgrade subscription');
+        toast.error(err?.response?.data?.message || 'Failed to update subscription');
       } finally {
         setUpgrading(false);
       }
@@ -95,18 +119,28 @@ function Subscription() {
   const handleSimulatedPayment = async () => {
     setPaying(true);
     try {
-      // Simulate a successful payment
+      const planId = paymentDialog.plan?._id || paymentDialog.plan?.id;
       const mockPaymentId = `pay_sim_${Date.now()}`;
-      await subscriptionApi.subscribe({ planId: paymentDialog.plan.id });
+
+      // Activate subscription
+      await subscriptionApi.subscribe({
+        planId,
+        paymentMethod: 'card',
+      });
+
+      // Verify payment record
       await subscriptionApi.verifyPayment({
         subscriptionId: currentPlan?._id,
+        planId,
         paymentId: mockPaymentId,
         orderId: paymentDialog.orderId,
         amount: paymentDialog.amount,
       });
+
       toast.success('Payment successful! Subscription activated.');
       setPaymentDialog({ open: false, plan: null, orderId: '', amount: 0 });
       fetchData();
+      refreshBusiness?.();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Payment verification failed');
     } finally {
@@ -122,30 +156,34 @@ function Subscription() {
   };
 
   const isCurrentPlan = (plan) => {
-    if (!currentPlan) return plan?.price === 0;
-    return currentPlan.planId === plan.id || currentPlan.name?.toLowerCase() === plan.name?.toLowerCase();
+    const pId = plan._id || plan.id;
+    if (pId && currentPlanId && String(pId) === String(currentPlanId)) return true;
+    if (plan.name && currentPlanName && plan.name.toLowerCase() === currentPlanName.toLowerCase()) return true;
+    if (!currentPlan && plan.price === 0) return true;
+    return false;
   };
 
   const isHigherPlan = (plan) => {
     if (!currentPlan) return plan.price > 0;
     const planOrder = ['free', 'starter', 'business', 'pro'];
-    const currentIdx = planOrder.indexOf((currentPlan.name || '').toLowerCase());
+    const currentIdx = planOrder.indexOf(currentPlanName.toLowerCase());
     const planIdx = planOrder.indexOf((plan.name || '').toLowerCase());
     return planIdx > currentIdx;
   };
 
   const getPlanFeatures = (plan) => {
-    const features = plan.features || [];
-    if (features.length > 0) return features;
-    // Default features based on plan name
+    const features = plan.limits?.features || plan.features || [];
+    if (features.length > 0) {
+      return features.map((f) => f.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()));
+    }
     const name = (plan.name || '').toLowerCase();
     const defaults = {
-      free: ['Up to 25 products', 'Up to 2 users', 'Basic reports', 'Single branch'],
-      starter: ['Up to 100 products', 'Up to 5 users', 'Basic reports', 'Up to 3 branches', 'Email support'],
-      business: ['Unlimited products', 'Up to 20 users', 'Advanced reports', 'Up to 10 branches', 'Priority support', 'API access'],
-      pro: ['Unlimited products', 'Unlimited users', 'All reports & analytics', 'Unlimited branches', '24/7 priority support', 'API access', 'Custom integrations'],
+      free: ['Up to 50 products', 'Up to 1 user', 'Basic reports', 'POS checkout', 'Single branch'],
+      starter: ['Up to 100 products', 'Up to 3 users', 'Standard reports', 'Multi-branch (3)', 'Email support'],
+      business: ['Up to 500 products', 'Up to 10 users', 'Advanced analytics', 'Multi-branch (10)', 'Priority support', 'Scan & Stock OCR'],
+      pro: ['Unlimited products', 'Unlimited users', 'Full analytics & reports', 'Unlimited branches', '24/7 priority support', 'Custom integrations'],
     };
-    return defaults[name] || ['Basic features'];
+    return defaults[name] || ['Standard StoreX features'];
   };
 
   if (loading) return <LoadingSpinner type="card" />;
@@ -154,8 +192,28 @@ function Subscription() {
     <div>
       <PageHeader
         title="Subscription"
-        subtitle="Manage your StoreX subscription plan"
+        subtitle="Manage, reactivate, or upgrade your StoreX subscription plan"
       />
+
+      {/* Expired Plan Banner */}
+      {isExpired && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-lg bg-red-100 flex items-center justify-center shrink-0 mt-0.5">
+              <HiOutlineExclamationTriangle className="w-5 h-5 text-red-600" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-red-900">Your Subscription Plan Has Expired</h4>
+              <p className="text-xs text-red-700 mt-1">
+                {currentPlanEndDate
+                  ? `Your plan expired on ${new Date(currentPlanEndDate).toLocaleDateString('en-IN')}. `
+                  : 'Your subscription period has ended. '}
+                Reactivate your current plan or upgrade to any plan below to restore full write access.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Current Plan Card */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
@@ -163,23 +221,31 @@ function Subscription() {
           <div>
             <div className="flex items-center gap-2 mb-1">
               <h3 className="text-lg font-semibold text-gray-900">
-                {currentPlan?.name || 'Free Plan'}
+                {currentPlanName} Plan
               </h3>
-              <Badge variant={
-                currentPlan?.status === 'active' ? 'success' :
-                currentPlan?.status === 'trial' ? 'info' :
-                currentPlan?.status === 'expired' ? 'danger' :
-                'gray'
-              }>
-                {currentPlan?.status || 'Active'}
+              <Badge
+                variant={
+                  isExpired
+                    ? 'danger'
+                    : currentPlan?.status === 'active'
+                    ? 'success'
+                    : currentPlan?.status === 'trial'
+                    ? 'warning'
+                    : 'gray'
+                }
+              >
+                {isExpired ? 'Expired' : (currentPlan?.status || 'Active')}
               </Badge>
             </div>
             <p className="text-sm text-gray-500">
-              {currentPlan?.price > 0
-                ? `${formatCurrency(currentPlan.price)}/${currentPlan.interval || 'month'}`
-                : 'Free forever'}
-              {currentPlan?.renewalDate && (
-                <span className="ml-2">· Renews {new Date(currentPlan.renewalDate).toLocaleDateString('en-IN')}</span>
+              {currentPlanPrice > 0
+                ? `${formatCurrency(currentPlanPrice)}/${currentPlanInterval}`
+                : 'Free Plan'}
+              {currentPlanEndDate && (
+                <span className="ml-2">
+                  · {isExpired ? 'Expired on' : 'Renews on'}{' '}
+                  {new Date(currentPlanEndDate).toLocaleDateString('en-IN')}
+                </span>
               )}
             </p>
           </div>
@@ -189,22 +255,41 @@ function Subscription() {
         {usage && (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-6 pt-6 border-t border-gray-100">
             {[
-              { label: 'Products', used: usage.productsUsed ?? usage.products?.used ?? 0, limit: usage.productsLimit ?? usage.products?.limit ?? 25, icon: HiOutlineCube },
-              { label: 'Users', used: usage.usersUsed ?? usage.users?.used ?? 1, limit: usage.usersLimit ?? usage.users?.limit ?? 2, icon: HiOutlineUserGroup },
-              { label: 'Branches', used: usage.branchesUsed ?? usage.branches?.used ?? 1, limit: usage.branchesLimit ?? usage.branches?.limit ?? 1, icon: HiOutlineBuildingOffice },
+              {
+                label: 'Products',
+                used: usage.productsUsed ?? usage.products?.used ?? 0,
+                limit: usage.productsLimit ?? usage.products?.limit ?? 50,
+                icon: HiOutlineCube,
+              },
+              {
+                label: 'Users',
+                used: usage.usersUsed ?? usage.users?.used ?? 1,
+                limit: usage.usersLimit ?? usage.users?.limit ?? 1,
+                icon: HiOutlineUserGroup,
+              },
+              {
+                label: 'Branches',
+                used: usage.branchesUsed ?? usage.branches?.used ?? 1,
+                limit: usage.branchesLimit ?? usage.branches?.limit ?? 1,
+                icon: HiOutlineBuildingOffice,
+              },
             ].map((item) => {
-              const percentage = Math.min((item.used / item.limit) * 100, 100);
+              const percentage = item.limit ? Math.min((item.used / item.limit) * 100, 100) : 0;
               const isNearLimit = percentage >= 80;
-              const isAtLimit = item.used >= item.limit;
+              const isAtLimit = item.limit && item.used >= item.limit;
               return (
                 <div key={item.label} className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <item.icon className={`w-4 h-4 ${isAtLimit ? 'text-red-500' : isNearLimit ? 'text-yellow-500' : 'text-gray-400'}`} />
+                      <item.icon
+                        className={`w-4 h-4 ${
+                          isAtLimit ? 'text-red-500' : isNearLimit ? 'text-yellow-500' : 'text-gray-400'
+                        }`}
+                      />
                       <span className="text-sm font-medium text-gray-700">{item.label}</span>
                     </div>
                     <span className={`text-sm font-medium ${isAtLimit ? 'text-red-600' : 'text-gray-500'}`}>
-                      {item.used} / {item.limit === Infinity ? '∞' : item.limit}
+                      {item.used} / {!item.limit || item.limit === Infinity ? '∞' : item.limit}
                     </span>
                   </div>
                   <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
@@ -229,24 +314,25 @@ function Subscription() {
       <h3 className="text-base font-semibold text-gray-900 mb-4">Available Plans</h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {plans.map((plan) => {
+          const planKey = (plan.name || '').toLowerCase() || 'free';
           const isCurrent = isCurrentPlan(plan);
           const isHigher = isHigherPlan(plan);
-          const planKey = (plan.name || '').toLowerCase() || 'free';
           const colors = PLAN_COLORS[planKey] || PLAN_COLORS.free;
           const features = getPlanFeatures(plan);
+          const planId = plan._id || plan.id;
 
           return (
             <div
-              key={plan.id}
+              key={planId}
               className={`bg-white rounded-xl border-2 p-5 relative transition-shadow ${
                 isCurrent ? `${colors.border} shadow-md` : 'border-gray-200 hover:shadow-sm'
               }`}
             >
               {isCurrent && (
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                  <Badge variant="success" className="flex items-center gap-1">
+                  <Badge variant={isExpired ? 'danger' : 'success'} className="flex items-center gap-1">
                     <HiOutlineCheckCircle className="w-3.5 h-3.5" />
-                    Current
+                    {isExpired ? 'Current (Expired)' : 'Current'}
                   </Badge>
                 </div>
               )}
@@ -262,7 +348,7 @@ function Subscription() {
                   )}
                 </div>
 
-                <ul className="space-y-2 text-left mb-6">
+                <ul className="space-y-2 text-left mb-6 min-h-[140px]">
                   {features.map((feature, idx) => (
                     <li key={idx} className="flex items-start gap-2 text-sm text-gray-600">
                       <HiOutlineCheckCircle className="w-4 h-4 text-green-500 shrink-0 mt-0.5" />
@@ -271,26 +357,52 @@ function Subscription() {
                   ))}
                 </ul>
 
-                {!isCurrent && isHigher && (
+                {/* If it's the current plan and expired: allow reactivating */}
+                {isCurrent && isExpired && (
                   <Button
-                    className="w-full"
-                    onClick={() => handleUpgrade(plan.id)}
+                    className="w-full flex items-center justify-center gap-1.5"
+                    variant="primary"
+                    onClick={() => handleUpgrade(planId)}
+                    loading={upgrading}
+                  >
+                    {plan.price > 0 ? (
+                      <>
+                        Reactivate & Pay <HiOutlineCreditCard className="w-4 h-4" />
+                      </>
+                    ) : (
+                      <>
+                        Reactivate Free Plan <HiOutlineArrowPath className="w-4 h-4" />
+                      </>
+                    )}
+                  </Button>
+                )}
+
+                {/* If it's current plan and active */}
+                {isCurrent && !isExpired && (
+                  <Button className="w-full" variant="secondary" disabled>
+                    Current Plan
+                  </Button>
+                )}
+
+                {/* If it's not the current plan */}
+                {!isCurrent && (
+                  <Button
+                    className="w-full flex items-center justify-center gap-1.5"
+                    variant={isHigher || isExpired ? 'primary' : 'secondary'}
+                    onClick={() => handleUpgrade(planId)}
                     loading={upgrading}
                   >
                     {plan.price > 0 ? (
                       <>
                         Pay Now <HiOutlineCreditCard className="w-4 h-4" />
                       </>
-                    ) : (
+                    ) : isHigher || isExpired ? (
                       <>
-                        Upgrade <HiOutlineArrowUpRight className="w-4 h-4" />
+                        Choose Plan <HiOutlineArrowUpRight className="w-4 h-4" />
                       </>
+                    ) : (
+                      <>Switch Plan</>
                     )}
-                  </Button>
-                )}
-                {isCurrent && (
-                  <Button className="w-full" variant="secondary" disabled>
-                    Current Plan
                   </Button>
                 )}
               </div>
@@ -303,7 +415,7 @@ function Subscription() {
       <Modal
         isOpen={paymentDialog.open}
         onClose={() => setPaymentDialog({ open: false, plan: null, orderId: '', amount: 0 })}
-        title="Complete Payment"
+        title="Complete Subscription Payment"
         size="sm"
       >
         <div className="space-y-4">
@@ -319,13 +431,16 @@ function Subscription() {
           </div>
 
           <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <p className="text-xs text-gray-500">Order ID</p>
+            <p className="text-xs text-gray-500">Order Reference</p>
             <p className="text-sm font-mono text-gray-700 mt-0.5">{paymentDialog.orderId}</p>
           </div>
 
-          <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
-            <p className="text-xs text-yellow-700">
-              This is a simulated payment gateway. In production, Razorpay checkout will be displayed here.
+          <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
+            <p className="text-xs text-amber-800 font-medium">
+              Payment Gateway Simulation
+            </p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              Click &quot;Confirm Payment&quot; below to simulate a successful payment and immediately activate the plan.
             </p>
           </div>
 
@@ -339,7 +454,7 @@ function Subscription() {
               Cancel
             </Button>
             <Button
-              className="flex-1"
+              className="flex-1 flex items-center justify-center gap-1.5"
               onClick={handleSimulatedPayment}
               loading={paying}
             >

@@ -68,7 +68,10 @@ const createPaymentIntent = async (req, res, next) => {
 const verifyPayment = async (req, res, next) => {
   try {
     const { subscriptionId, ...paymentData } = req.body;
-    const result = await subscriptionService.verifyPayment(subscriptionId, paymentData);
+    const result = await subscriptionService.verifyPayment(subscriptionId, {
+      ...paymentData,
+      businessId: req.businessId,
+    });
     successResponse(res, result, 'Payment verified and subscription activated');
   } catch (error) {
     next(error);

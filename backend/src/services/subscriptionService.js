@@ -10,8 +10,32 @@ class SubscriptionError extends Error {
 }
 
 const getCurrentPlan = async (businessId) => {
-  const subscription = await Subscription.findOne({ businessId }).populate('planId').lean();
-  if (!subscription) throw new SubscriptionError('No subscription found', 404);
+  let subscription = await Subscription.findOne({ businessId }).populate('planId').lean();
+  if (!subscription) {
+    const freePlan = (await Plan.findOne({ price: 0 })) || (await Plan.findOne().sort('price'));
+    const business = await Business.findById(businessId);
+    if (!business) throw new SubscriptionError('Business not found', 404);
+
+    const status = business.subscriptionStatus || 'trial';
+    const startDate = business.trialStartDate || business.createdAt || new Date();
+    const endDate = business.trialEndDate || new Date();
+
+    const createdSub = await Subscription.create({
+      businessId,
+      planId: freePlan._id,
+      status: status === 'active' ? 'active' : status === 'trial' ? 'trial' : 'expired',
+      startDate,
+      endDate,
+      trialStartDate: startDate,
+      trialEndDate: endDate,
+    });
+
+    if (!business.planId) {
+      await Business.findByIdAndUpdate(businessId, { planId: freePlan._id });
+    }
+
+    subscription = await Subscription.findById(createdSub._id).populate('planId').lean();
+  }
   return subscription;
 };
 
@@ -63,13 +87,24 @@ const cancel = async (businessId) => {
 };
 
 const getUsage = async (businessId) => {
-  const business = await Business.findById(businessId).populate('planId').lean();
+  let business = await Business.findById(businessId).populate('planId').lean();
   if (!business) throw new SubscriptionError('Business not found', 404);
 
+  if (!business.planId) {
+    const freePlan = (await Plan.findOne({ price: 0 })) || (await Plan.findOne().sort('price'));
+    if (freePlan) {
+      await Business.findByIdAndUpdate(businessId, { planId: freePlan._id });
+      business = await Business.findById(businessId).populate('planId').lean();
+    }
+  }
+
+  const limits = business.planId?.limits || { products: 50, users: 1, branches: 1 };
+  const usage = business.usage || {};
+
   return {
-    products: { used: business.usage.productsUsed, limit: business.planId?.limits?.products || 0 },
-    users: { used: business.usage.usersUsed, limit: business.planId?.limits?.users || 0 },
-    branches: { used: business.usage.branchesUsed, limit: business.planId?.limits?.branches || 0 },
+    products: { used: usage.productsUsed || 0, limit: limits.products ?? 50 },
+    users: { used: usage.usersUsed || 1, limit: limits.users ?? 1 },
+    branches: { used: usage.branchesUsed || 1, limit: limits.branches ?? 1 },
   };
 };
 
@@ -128,29 +163,49 @@ const createPaymentIntent = async (subscriptionId, planId) => {
   };
 };
 
-const verifyPayment = async (subscriptionId, paymentData) => {
-  const sub = await Subscription.findByIdAndUpdate(
-    subscriptionId,
-    { status: 'active', startDate: new Date() },
-    { new: true }
-  );
+const verifyPayment = async (subscriptionId, paymentData = {}) => {
+  let sub = null;
+  if (subscriptionId) {
+    sub = await Subscription.findById(subscriptionId);
+  }
+  if (!sub && paymentData.businessId) {
+    sub = await Subscription.findOne({ businessId: paymentData.businessId });
+  }
   if (!sub) throw new AppError('Subscription not found', 404);
+
+  const targetPlanId = paymentData.planId || sub.planId;
+  const plan = await Plan.findById(targetPlanId);
+  if (!plan) throw new AppError('Plan not found', 404);
+
+  const now = new Date();
+  let endDate = new Date(now);
+  if (plan.interval === 'yearly') {
+    endDate.setFullYear(endDate.getFullYear() + 1);
+  } else {
+    endDate.setMonth(endDate.getMonth() + 1);
+  }
+
+  sub.status = 'active';
+  sub.planId = plan._id;
+  sub.startDate = now;
+  sub.endDate = endDate;
+  await sub.save();
 
   await Payment.create({
     businessId: sub.businessId,
     subscriptionId: sub._id,
-    planId: sub.planId,
-    amount: paymentData.amount || 0,
+    planId: plan._id,
+    amount: paymentData.amount || plan.price || 0,
     currency: 'INR',
-    paymentProvider: 'razorpay',
-    paymentId: paymentData.paymentId,
+    paymentProvider: paymentData.paymentProvider || 'razorpay',
+    paymentId: paymentData.paymentId || ('pay_' + Date.now()),
     orderId: paymentData.orderId,
     status: 'completed',
   });
 
   await Business.findByIdAndUpdate(sub.businessId, {
     subscriptionStatus: 'active',
-    planId: sub.planId,
+    planId: plan._id,
   });
 
   return sub.populate('planId');

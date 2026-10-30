@@ -34,6 +34,8 @@ router.get('/plans', adminController.getPlans);
 router.post('/plans', adminController.createPlan);
 router.put('/plans/:id', adminController.updatePlan);
 router.get('/subscriptions', adminController.getSubscriptions);
+router.put('/subscriptions/:id/reactivate', adminController.reactivateSubscription);
+router.put('/subscriptions/:id', adminController.reactivateSubscription);
 router.get('/payments', adminController.getPayments);
 router.get('/audit-logs', adminController.getAuditLogs);
 router.get('/users', adminController.getUsers);

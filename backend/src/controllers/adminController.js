@@ -119,4 +119,13 @@ const getRevenue = async (req, res, next) => {
   }
 };
 
-module.exports = { getDashboard, getBusinesses, getBusinessById, activateBusiness, suspendBusiness, getPlans, createPlan, updatePlan, getSubscriptions, getPayments, getAuditLogs, getRevenue, getUsers };
+const reactivateSubscription = async (req, res, next) => {
+  try {
+    const result = await adminService.reactivateSubscription(req.params.id, req.body, req.user);
+    successResponse(res, result, 'Subscription reactivated successfully');
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { getDashboard, getBusinesses, getBusinessById, activateBusiness, suspendBusiness, getPlans, createPlan, updatePlan, getSubscriptions, reactivateSubscription, getPayments, getAuditLogs, getRevenue, getUsers };

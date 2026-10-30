@@ -1,4 +1,3 @@
-
 import { Routes, Route, Link } from 'react-router-dom';
 
 // Layouts
@@ -55,6 +54,10 @@ import Businesses from '../pages/admin/Businesses';
 import Plans from '../pages/admin/Plans';
 import Subscriptions from '../pages/admin/Subscriptions';
 import Payments from '../pages/admin/Payments';
+import Users from '../pages/admin/Users';
+import Revenue from '../pages/admin/Revenue';
+import FeatureFlags from '../pages/admin/FeatureFlags';
+import SupportRequests from '../pages/admin/SupportRequests';
 import AuditLogs from '../pages/admin/AuditLogs';
 import AdminSettings from '../pages/admin/AdminSettings';
 
@@ -120,6 +123,10 @@ function AppRoutes() {
           <Route path="/admin/plans" element={<Plans />} />
           <Route path="/admin/subscriptions" element={<Subscriptions />} />
           <Route path="/admin/payments" element={<Payments />} />
+          <Route path="/admin/users" element={<Users />} />
+          <Route path="/admin/revenue" element={<Revenue />} />
+          <Route path="/admin/feature-flags" element={<FeatureFlags />} />
+          <Route path="/admin/support-requests" element={<SupportRequests />} />
           <Route path="/admin/audit-logs" element={<AuditLogs />} />
           <Route path="/admin/settings" element={<AdminSettings />} />
         </Route>

@@ -19,6 +19,12 @@ const setTenant = async (req, res, next) => {
     }
     req.businessId = req.user.businessId;
 
+    // Check if the route is for subscription operations (users must be able to view, pay, reactivate, and upgrade plans!)
+    const isSubscriptionPath =
+      (req.baseUrl && req.baseUrl.includes('subscription')) ||
+      (req.originalUrl && req.originalUrl.includes('/subscription')) ||
+      (req.path && req.path.includes('subscription'));
+
     // --- Trial expiration enforcement ---
     const business = await Business.findById(req.user.businessId).select('subscriptionStatus trialEndDate status').lean();
     if (business) {
@@ -28,8 +34,8 @@ const setTenant = async (req, res, next) => {
         business.subscriptionStatus = 'expired';
       }
 
-      // Block write operations for expired or suspended subscriptions
-      if (business.subscriptionStatus === 'expired' || business.subscriptionStatus === 'suspended') {
+      // Block write operations for expired or suspended subscriptions (except subscription/payment routes)
+      if ((business.subscriptionStatus === 'expired' || business.subscriptionStatus === 'suspended') && !isSubscriptionPath) {
         if (WRITE_METHODS.includes(req.method)) {
           const message = business.subscriptionStatus === 'expired'
             ? 'Your trial has expired. Please upgrade your plan to continue using write features.'

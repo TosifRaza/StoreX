@@ -326,7 +326,7 @@
 // //   return { totalRevenue: totalRevenue[0]?.total || 0, monthlyRevenue };
 // // };
 
-// // module.exports = { getDashboard, getBusinesses, getBusinessById, activateBusiness, suspendBusiness, getPlans, createPlan, updatePlan, getSubscriptions, getPayments, getAuditLogs, getRevenue, getUsers };
+// // module.exports = { getDashboard, getBusinesses, getBusinessById, activateBusiness, suspendBusiness, getPlans, createPlan, updatePlan, getSubscriptions, reactivateSubscription, getPayments, getAuditLogs, getRevenue, getUsers };
 
 // const Business = require('../models/Business');
 // const User = require('../models/User');
@@ -1012,17 +1012,101 @@ const getSubscriptions = async (query) => {
   const limit = Math.min(parseInt(query.limit) || config.pagination.defaultLimit, config.pagination.maxLimit);
   const skip = (page - 1) * limit;
   const filter = {};
-  if (query.status) filter.status = query.status;
+  if (query.status) {
+    if (query.status === 'expired') {
+      filter.$or = [
+        { status: 'expired' },
+        { endDate: { $lt: new Date() } },
+      ];
+    } else {
+      filter.status = query.status;
+    }
+  }
   if (query.plan) {
     const plan = await Plan.findOne({ name: { $regex: query.plan, $options: 'i' } });
     if (plan) filter.planId = plan._id;
   }
 
   const [data, total] = await Promise.all([
-    Subscription.find(filter).populate('businessId', 'name email').populate('planId', 'name price').sort('-createdAt').skip(skip).limit(limit).lean(),
+    Subscription.find(filter).populate('businessId', 'name email').populate('planId', 'name price interval').sort('-createdAt').skip(skip).limit(limit).lean(),
     Subscription.countDocuments(filter),
   ]);
   return { data, page, limit, total };
+};
+
+const reactivateSubscription = async (id, data = {}, adminUser) => {
+  const subscription = await Subscription.findById(id);
+  if (!subscription) throw new AdminError('Subscription not found', 404);
+
+  const planId = data.planId || subscription.planId;
+  const plan = await Plan.findById(planId);
+  if (!plan) throw new AdminError('Plan not found', 404);
+
+  const status = data.status || 'active';
+  const now = new Date();
+  let endDate;
+
+  if (data.endDate) {
+    endDate = new Date(data.endDate);
+  } else if (data.durationDays) {
+    endDate = new Date(now.getTime() + Number(data.durationDays) * 24 * 60 * 60 * 1000);
+  } else if (data.durationMonths) {
+    endDate = new Date(now);
+    endDate.setMonth(endDate.getMonth() + Number(data.durationMonths));
+  } else {
+    endDate = new Date(now);
+    if (plan.interval === 'yearly') {
+      endDate.setFullYear(endDate.getFullYear() + 1);
+    } else {
+      endDate.setMonth(endDate.getMonth() + 1);
+    }
+  }
+
+  subscription.planId = plan._id;
+  subscription.status = status;
+  subscription.startDate = now;
+  subscription.endDate = endDate;
+  if (status === 'trial') {
+    subscription.trialStartDate = now;
+    subscription.trialEndDate = endDate;
+  }
+  await subscription.save();
+
+  if (subscription.businessId) {
+    const businessUpdate = {
+      subscriptionStatus: status,
+      planId: plan._id,
+    };
+    if (status === 'trial') {
+      businessUpdate.trialStartDate = now;
+      businessUpdate.trialEndDate = endDate;
+    }
+    await Business.findByIdAndUpdate(subscription.businessId, businessUpdate);
+  }
+
+  try {
+    await AuditLog.create({
+      businessId: subscription.businessId,
+      userId: adminUser?._id,
+      action: 'REACTIVATE_SUBSCRIPTION',
+      resource: 'Subscription',
+      resourceId: subscription._id,
+      metadata: {
+        planName: plan.name,
+        status,
+        startDate: now,
+        endDate,
+        note: data.note || 'Reactivated by Super Admin',
+      },
+    });
+  } catch (err) {
+    console.error('AuditLog error:', err.message);
+  }
+
+  return await Subscription.findById(id)
+    .populate('businessId', 'name email')
+    .populate('planId', 'name price interval')
+    .lean();
 };
 
 const getPayments = async (query) => {
@@ -1091,4 +1175,4 @@ const getRevenue = async (query) => {
   return { totalRevenue: totalRevenue[0]?.total || 0, monthlyRevenue };
 };
 
-module.exports = { getDashboard, getBusinesses, getBusinessById, activateBusiness, suspendBusiness, getPlans, createPlan, updatePlan, getSubscriptions, getPayments, getAuditLogs, getRevenue, getUsers };
+module.exports = { getDashboard, getBusinesses, getBusinessById, activateBusiness, suspendBusiness, getPlans, createPlan, updatePlan, getSubscriptions, reactivateSubscription, getPayments, getAuditLogs, getRevenue, getUsers };

@@ -304,6 +304,28 @@ function MainLayout() {
         />
 
         <main className="p-6">
+          {business?.subscriptionStatus === 'expired' && location.pathname !== '/app/subscription' && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center justify-center shrink-0 text-amber-700 font-bold">
+                  !
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-amber-900">Subscription Expired</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Your subscription or trial has expired. Write actions are restricted until reactivated.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate('/app/subscription')}
+                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shrink-0 transition-colors"
+              >
+                Renew / Upgrade Plan
+              </button>
+            </div>
+          )}
           <Outlet />
         </main>
       </div>
