@@ -31,6 +31,11 @@ const colorConfig = {
     iconBg: 'bg-yellow-100',
     iconColor: 'text-yellow-600',
   },
+  gray: {
+    border: 'border-l-gray-400',
+    iconBg: 'bg-gray-100',
+    iconColor: 'text-gray-500',
+  },
 };
 
 const trendConfig = {
@@ -54,6 +59,7 @@ const trendConfig = {
 function StatCard({
   title,
   value,
+  subtitle,
   icon: Icon,
   trend = 'neutral',
   trendValue,
@@ -65,11 +71,14 @@ function StatCard({
 
   return (
     <div
-      className={`bg-white rounded-xl border border-gray-200 border-l-4 ${colors.border} p-5 flex items-start justify-between gap-4`}
+      className={`bg-white rounded-xl border border-gray-200 border-l-4 ${colors.border} p-5 flex items-start justify-between gap-4 transition-all duration-200 hover:shadow-sm`}
     >
       <div className="flex flex-col gap-1 min-w-0">
         <span className="text-sm font-medium text-gray-500 truncate">{title}</span>
         <span className="text-2xl font-bold text-gray-900 truncate">{value}</span>
+        {subtitle && (
+          <span className="text-xs text-gray-500 truncate">{subtitle}</span>
+        )}
         {trendValue !== undefined && (
           <div className="flex items-center gap-1 mt-1">
             <span
